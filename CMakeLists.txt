@@ -6,6 +6,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 支持 Conan 依赖管理（如果使用 Conan）
+# 注意：toolchain 文件应该在项目根目录，而不是 build 目录
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/conan_toolchain.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/conan_toolchain.cmake)
+    # 添加 Conan 生成的配置文件路径
+    list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
 # 需要线程支持（std::thread），在 Linux 下要显式链接 pthread
 find_package(Threads REQUIRED)
 
@@ -15,7 +23,6 @@ add_executable(outDebug
     src/main.cpp
     src/core/Page.cpp
     src/core/Record.cpp
-    src/core/test_core.cpp
     src/utils/Coding.cpp
     src/utils/Hash.cpp
     src/utils/Random.cpp
@@ -33,11 +40,19 @@ target_include_directories(outDebug PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
-target_link_libraries(outDebug PRIVATE Threads::Threads)
+target_link_libraries(outDebug PRIVATE 
+    Threads::Threads
+    utils
+    core
+    memory
+    transaction
+)
 
-# 添加子目录（core 和 utils 库）
+# 添加子目录（core、utils、memory 和 transaction 库）
 add_subdirectory(src/core)
 add_subdirectory(src/utils)
+add_subdirectory(src/memory)
+add_subdirectory(src/transaction)
 
 # B+树测试可执行文件（如果文件存在）
 # if(EXISTS ${CMAKE_SOURCE_DIR}/src/test_bplustree.cpp)

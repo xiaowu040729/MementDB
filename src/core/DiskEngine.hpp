@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include "../memory/WALBase.hpp"
 #include <sys/stat.h>
 #include <aio.h>
 // #include <xxhash.h>  // Optional: for fast hashing, can be disabled if not available
@@ -430,21 +431,27 @@ private:
 
 // ==================== 分布式WAL ====================
 
-class DistributedWAL {
+// 定义 LogRecord 结构（在类外部，以便作为模板参数）
+struct DistributedWALLogRecord {
+    uint64_t lsn;
+    uint64_t timestamp;
+    uint32_t node_id;
+    uint32_t term; // Raft任期
+    std::vector<char> data;
+    std::function<void(bool)> callback;
+    
+    DistributedWALLogRecord(uint64_t l, uint32_t nid, uint32_t t, std::vector<char> d)
+        : lsn(l), node_id(nid), term(t), data(std::move(d)) {
+        // 使用标准库获取时间戳
+        timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+};
+
+class DistributedWAL : public memory::WALBase<DistributedWALLogRecord> {
 public:
-    struct LogRecord {
-        uint64_t lsn;
-        uint64_t timestamp;
-        uint32_t node_id;
-        uint32_t term; // Raft任期
-        std::vector<char> data;
-        std::function<void(bool)> callback;
-        
-        LogRecord(uint64_t l, uint32_t nid, uint32_t t, std::vector<char> d)
-            : lsn(l), node_id(nid), term(t), data(std::move(d)) {
-            timestamp = get_current_time();
-        }
-    };
+    // 使用外部定义的 LogRecord 类型
+    using LogRecord = DistributedWALLogRecord;
     
     DistributedWAL(const std::string& data_dir, size_t node_id,
                    const std::vector<std::string>& peers);
@@ -474,7 +481,6 @@ public:
     ClusterStatus get_cluster_status() const;
     
 private:
-    std::string data_dir_;
     size_t node_id_;
     std::vector<std::string> peers_;
     
@@ -486,7 +492,6 @@ private:
     std::vector<LogRecord> log_entries_;
     std::unordered_map<uint64_t, std::promise<bool>> commit_promises_;
     
-    uint64_t next_lsn_{1};
     mutable std::mutex wal_mutex_;
     
     std::vector<bool> peers_connected_;
@@ -535,17 +540,11 @@ private:
     void replicate_record(const LogRecord& record);
     void wait_for_quorum(uint64_t lsn);
 
-    // Raft加载
+    // Raft加载（重写基类方法以支持额外的 term 状态）
     void load_wal_state();
 
-    // Raft持久化
+    // Raft持久化（重写基类方法以支持额外的 term 状态）
     void persist_wal_state();
-    
-    // 确保目录存在
-    static void ensure_directory(const std::string& path);
-
-    // 获取当前时间
-    static uint64_t get_current_time();
     
     // Raft配置
     uint64_t election_timeout_ = 150; // 150ms

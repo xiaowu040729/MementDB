@@ -1055,7 +1055,7 @@ void SmartBufferPool::log_stats(const PoolStats& stats) {
 
 DistributedWAL::DistributedWAL(const std::string& data_dir, size_t node_id,
                                const std::vector<std::string>& peers)
-    : data_dir_(data_dir),
+    : memory::WALBase<DistributedWALLogRecord>(data_dir),
       node_id_(node_id),
       peers_(peers),
       current_term_(0),
@@ -1066,7 +1066,7 @@ DistributedWAL::DistributedWAL(const std::string& data_dir, size_t node_id,
                          ", DataDir=" + data_dir +
                          ", PeerCount=" + std::to_string(peers.size()));
     
-    ensure_directory(data_dir);
+    memory::WALBase<DistributedWALLogRecord>::ensure_directory(data_dir);
     load_wal_state();
     
     // 启动Raft共识线程
@@ -1085,7 +1085,7 @@ DistributedWAL::~DistributedWAL() {
 uint64_t DistributedWAL::append(const std::vector<char>& data) {
     std::lock_guard<std::mutex> lock(wal_mutex_);
     
-    uint64_t lsn = next_lsn_++;
+    uint64_t lsn = this->get_next_lsn();
     uint32_t term = current_term_;
     
     LogRecord record(lsn, node_id_, term, data);
@@ -1113,9 +1113,9 @@ uint64_t DistributedWAL::append(const std::vector<char>& data) {
 std::optional<DistributedWAL::LogRecord> DistributedWAL::read(uint64_t lsn) {
     std::lock_guard<std::mutex> lock(wal_mutex_);
     
-    if (lsn >= next_lsn_) {
+    if (lsn >= this->next_lsn_) {
         LOG_WARN("DATABASE", "Reading WAL record failed: LSN=" + std::to_string(lsn) +
-                             " >= next_lsn=" + std::to_string(next_lsn_));
+                             " >= next_lsn=" + std::to_string(this->next_lsn_));
         return std::nullopt;
     }
     
@@ -1247,7 +1247,7 @@ void DistributedWAL::replicate_pending_logs() {
 }
 
 void DistributedWAL::persist_record(const LogRecord& record) {
-    std::string file_path = data_dir_ + "/wal_" + 
+    std::string file_path = this->get_data_dir() + "/wal_" +
                            std::to_string(record.term) + ".log";
     
     std::ofstream file(file_path, std::ios::binary | std::ios::app);
@@ -1302,7 +1302,11 @@ void DistributedWAL::wait_for_quorum(uint64_t lsn) {
 }
 
 void DistributedWAL::load_wal_state() {
-    std::string state_path = data_dir_ + "/wal_state.bin";
+    // 先调用基类方法加载基础状态（next_lsn）
+    this->load_wal_state_base();
+    
+    // 然后加载分布式特定的状态（current_term）
+    std::string state_path = this->get_wal_state_path();
     std::ifstream file(state_path, std::ios::binary);
     
     if (!file.is_open()) {
@@ -1310,20 +1314,19 @@ void DistributedWAL::load_wal_state() {
         return;
     }
     
-    uint64_t next_lsn;
+    // 跳过 next_lsn（基类已读取），读取 current_term
+    file.seekg(sizeof(uint64_t), std::ios::beg);
     uint32_t current_term;
-    file.read(reinterpret_cast<char*>(&next_lsn), sizeof(next_lsn));
     file.read(reinterpret_cast<char*>(&current_term), sizeof(current_term));
-    next_lsn_ = next_lsn;
     current_term_.store(current_term);
     
-    LOG_INFO("DATABASE", "Loaded WAL state: NextLSN=" + std::to_string(next_lsn) +
-                         ", CurrentTerm=" + std::to_string(current_term) +
+    LOG_INFO("DATABASE", "Loaded DistributedWAL state: CurrentTerm=" + std::to_string(current_term) +
                          ", File=" + state_path);
 }
 
 void DistributedWAL::persist_wal_state() {
-    std::string state_path = data_dir_ + "/wal_state.bin";
+    // 重写基类方法，同时持久化 next_lsn 和 current_term
+    std::string state_path = this->get_wal_state_path();
     std::ofstream file(state_path, std::ios::binary);
     
     if (!file.is_open()) {
@@ -1331,24 +1334,18 @@ void DistributedWAL::persist_wal_state() {
         return;
     }
     
-    uint64_t next_lsn = next_lsn_;
+    uint64_t next_lsn = this->next_lsn_;
     uint32_t current_term = current_term_.load();
     file.write(reinterpret_cast<const char*>(&next_lsn), sizeof(next_lsn));
     file.write(reinterpret_cast<const char*>(&current_term), sizeof(current_term));
     
-    LOG_DEBUG("DATABASE", "Persisted WAL state: NextLSN=" + std::to_string(next_lsn) +
+    LOG_DEBUG("DATABASE", "Persisted DistributedWAL state: NextLSN=" + std::to_string(next_lsn) +
                           ", CurrentTerm=" + std::to_string(current_term) +
                           ", File=" + state_path);
 }
 
-void DistributedWAL::ensure_directory(const std::string& path) {
-    std::filesystem::create_directories(path);
-}
-
-uint64_t DistributedWAL::get_current_time() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-}
+// ensure_directory 和 get_current_time 现在使用基类的静态方法
+// 这些方法已从 DistributedWAL 中移除，使用 WALBase 中的版本
 
 // ==================== DiskEngineV2 剩余方法实现 ====================
 

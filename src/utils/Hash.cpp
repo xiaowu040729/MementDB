@@ -1,5 +1,6 @@
 // File: src/utils/Hash.cpp
 #include "Hash.hpp"
+#include <xxhash.h>
 #include <algorithm> // for std::rotate
 
 namespace utils {
@@ -15,10 +16,20 @@ uint32_t Hash::ComputeHashWith(Algorithm algo, const void* data, size_t n, uint3
             return MurmurHash3(data, n, seed);
         case FNV1A_32:
             return FNV1aHash(data, n);
+        case XXHASH_32:
+            // 使用 xxhash 库（32位版本）
+            return static_cast<uint32_t>(XXH32(data, n, seed));
+        case XXHASH_64:
+            // 64位版本，返回低32位
+            return static_cast<uint32_t>(XXH64(data, n, seed));
         default:
-            // 默认回退
-            return MurmurHash3(data, n, seed);
+            // 默认使用 xxhash（最快）
+            return static_cast<uint32_t>(XXH32(data, n, seed));
     }
+}
+
+uint64_t Hash::ComputeHash64(const void* data, size_t n, uint64_t seed) {
+    return XXH64(data, n, seed);
 }
 
 // ---------- MurmurHash3 实现 ----------

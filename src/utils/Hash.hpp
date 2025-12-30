@@ -62,8 +62,14 @@ public:
     enum Algorithm {
         MURMUR3_32,    // 平衡性能与分布
         FNV1A_32,      // 极简，适合短键
-        XXHASH_32      // 极快，现代算法（可后期实现）
+        XXHASH_32,     // 极快，现代算法（使用 xxhash 库）
+        XXHASH_64      // 64位 xxhash（使用 xxhash 库）
     };
+    
+    /**
+     * 计算64位哈希值（使用 xxhash）
+     */
+    static uint64_t ComputeHash64(const void* data, size_t n, uint64_t seed = 0);
 
     /**
      * 使用指定算法计算哈希
@@ -109,8 +115,6 @@ private:
      * 极其简单，适合短字符串和CPU缓存敏感场景
      */
     static uint32_t FNV1aHash(const void* key, size_t len);
-    
-    // （XXHash等算法可后续添加）
 };
 
 } // namespace utils

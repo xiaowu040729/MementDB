@@ -19,6 +19,22 @@ Makefile
 *.cmake
 !CMakeLists.txt
 
+# Conan generated files
+conanbuild.sh
+conanbuildenv-*.sh
+conanrun.sh
+conanrunenv-*.sh
+deactivate_conanbuild.sh
+deactivate_conanrun.sh
+*Config.cmake
+*ConfigVersion.cmake
+*Targets.cmake
+*-Target-*.cmake
+*-release-*-data.cmake
+conandeps_legacy.cmake
+conan_toolchain.cmake
+CMakePresets.json
+
 # Log files
 logs/
 *.log
