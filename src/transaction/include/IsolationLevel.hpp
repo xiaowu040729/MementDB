@@ -22,11 +22,11 @@ enum class IsolationLevel {
 inline const char* IsolationLevelToString(IsolationLevel level) {
     switch (level) {
         case IsolationLevel::READ_UNCOMMITTED:
-            return "READ_UNCOMMITTED";
+            return "READ_UNCOMMITTED"; // 读未提交，最低隔离级别，允许脏读
         case IsolationLevel::READ_COMMITTED:
-            return "READ_COMMITTED";
+            return "READ_COMMITTED"; // 读已提交，允许幻读
         case IsolationLevel::REPEATABLE_READ:
-            return "REPEATABLE_READ";
+            return "REPEATABLE_READ"; // 可重复读，允许幻读
         case IsolationLevel::SERIALIZABLE:
             return "SERIALIZABLE";
         default:

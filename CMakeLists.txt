@@ -1,18 +1,23 @@
 cmake_minimum_required(VERSION 3.16)
 
+# 支持 Conan 依赖管理（如果使用 Conan）
+# 必须在 project() 之前设置 CMAKE_TOOLCHAIN_FILE
+# 优先从 build 目录查找 Conan 生成的文件，如果不存在则从根目录查找（向后兼容）
+if(EXISTS ${CMAKE_CURRENT_BINARY_DIR}/conan_toolchain.cmake)
+    set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_BINARY_DIR}/conan_toolchain.cmake)
+    # 添加 Conan 生成的配置文件路径（build 目录）
+    list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR})
+elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/conan_toolchain.cmake)
+    # 向后兼容：如果 build 目录没有，尝试根目录
+    set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/conan_toolchain.cmake)
+    list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
 project(MementoDB LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-# 支持 Conan 依赖管理（如果使用 Conan）
-# 注意：toolchain 文件应该在项目根目录，而不是 build 目录
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/conan_toolchain.cmake)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/conan_toolchain.cmake)
-    # 添加 Conan 生成的配置文件路径
-    list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR})
-endif()
 
 # 需要线程支持（std::thread），在 Linux 下要显式链接 pthread
 find_package(Threads REQUIRED)
@@ -46,13 +51,15 @@ target_link_libraries(outDebug PRIVATE
     core
     memory
     transaction
+    net
 )
 
-# 添加子目录（core、utils、memory 和 transaction 库）
+# 添加子目录（core、utils、memory、transaction 和 net 库）
 add_subdirectory(src/core)
 add_subdirectory(src/utils)
 add_subdirectory(src/memory)
 add_subdirectory(src/transaction)
+add_subdirectory(src/net)
 
 # B+树测试可执行文件（如果文件存在）
 # if(EXISTS ${CMAKE_SOURCE_DIR}/src/test_bplustree.cpp)

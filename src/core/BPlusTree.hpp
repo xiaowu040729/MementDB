@@ -103,9 +103,15 @@ protected:
     size_t node_id_;
 };
 
+// 前向声明
+template<typename KeyType, typename ValueType>
+class BPlusTree;
+
 // 内部节点
 template<typename KeyType, typename ValueType>
 class InternalNode : public Node<KeyType, ValueType> {
+    friend class BPlusTree<KeyType, ValueType>;
+    
 public:
     using Base = Node<KeyType, ValueType>;
     using NodePtr = std::shared_ptr<Node<KeyType, ValueType>>;
@@ -272,6 +278,8 @@ private:
 // 叶子节点
 template<typename KeyType, typename ValueType>
 class LeafNode : public Node<KeyType, ValueType> {
+    friend class BPlusTree<KeyType, ValueType>;
+    
 public:
     using Base = Node<KeyType, ValueType>;
     using KeyValue = KeyValuePair<KeyType, ValueType>;
@@ -769,13 +777,19 @@ private:
         } else {
             // 否则，将分裂键插入父节点
             auto parent = static_cast<InternalNodeType*>(leaf->parent());
+            if (!parent) {
+                LOG_ERROR("BPlusTree", "Parent node is null during leaf split");
+                return;
+            }
             parent->insert(split_key, new_leaf);
             
             // 如果父节点满了，继续分裂
+            // 需要通过根节点查找父节点的shared_ptr
             if (parent->is_full()) {
-                split_internal(std::static_pointer_cast<InternalNodeType>(
-                    std::static_pointer_cast<NodeType>(
-                        std::shared_ptr<InternalNodeType>(parent, [](auto*){}))));
+                InternalNodePtr parent_ptr = find_internal_node_ptr(parent);
+                if (parent_ptr) {
+                    split_internal(parent_ptr);
+                }
             }
         }
     }
@@ -799,19 +813,30 @@ private:
             root_ = new_root;
         } else {
             auto parent = static_cast<InternalNodeType*>(internal->parent());
+            if (!parent) {
+                LOG_ERROR("BPlusTree", "Parent node is null during internal split");
+                return;
+            }
             parent->insert(split_key, new_internal);
             
             if (parent->is_full()) {
-                split_internal(std::static_pointer_cast<InternalNodeType>(
-                    std::static_pointer_cast<NodeType>(
-                        std::shared_ptr<InternalNodeType>(parent, [](auto*){}))));
+                InternalNodePtr parent_ptr = find_internal_node_ptr(parent);
+                if (parent_ptr) {
+                    split_internal(parent_ptr);
+                }
             }
         }
     }
     
     // 重新平衡叶子节点（删除后）
     void rebalance_leaf(LeafNodePtr leaf) {
-        auto parent = static_cast<InternalNodeType*>(leaf->parent());
+        auto parent_raw = static_cast<InternalNodeType*>(leaf->parent());
+        if (!parent_raw) {
+            return;
+        }
+        
+        // 获取父节点的shared_ptr
+        InternalNodePtr parent = find_internal_node_ptr(parent_raw);
         if (!parent) {
             return;
         }
@@ -828,10 +853,11 @@ private:
         if (leaf_index > 0) {
             auto left_sibling = std::static_pointer_cast<LeafNodeType>(
                 parent->get_child(leaf_index - 1));
-            if (left_sibling->size() > (config_.leaf_order + 1) / 2) {
+            if (left_sibling && left_sibling->size() > static_cast<size_t>((config_.leaf_order + 1) / 2)) {
                 if (leaf->borrow_from_left(left_sibling.get())) {
                     // 更新父节点中的分隔键
-                    parent->remove(parent->get_key(leaf_index - 1));
+                    KeyType old_key = parent->get_key(leaf_index - 1);
+                    parent->remove(old_key);
                     parent->insert(leaf->get_key(0), leaf);
                     return;
                 }
@@ -842,10 +868,11 @@ private:
         if (leaf_index < parent->size()) {
             auto right_sibling = std::static_pointer_cast<LeafNodeType>(
                 parent->get_child(leaf_index + 1));
-            if (right_sibling->size() > (config_.leaf_order + 1) / 2) {
+            if (right_sibling && right_sibling->size() > static_cast<size_t>((config_.leaf_order + 1) / 2)) {
                 if (leaf->borrow_from_right(right_sibling.get())) {
                     // 更新父节点中的分隔键
-                    parent->remove(parent->get_key(leaf_index));
+                    KeyType old_key = parent->get_key(leaf_index);
+                    parent->remove(old_key);
                     parent->insert(right_sibling->get_key(0), right_sibling);
                     return;
                 }
@@ -857,30 +884,32 @@ private:
             // 合并到左兄弟
             auto left_sibling = std::static_pointer_cast<LeafNodeType>(
                 parent->get_child(leaf_index - 1));
-            leaf->merge_to_left(left_sibling.get());
-            
-            // 从父节点中移除分隔键和叶子节点引用
-            parent->remove(parent->get_key(leaf_index - 1));
-            
-            // 检查父节点是否需要重新平衡
-            if (parent->is_underflow()) {
-                rebalance_internal(std::static_pointer_cast<InternalNodeType>(
-                    std::static_pointer_cast<NodeType>(
-                        std::shared_ptr<InternalNodeType>(parent, [](auto*){}))));
+            if (left_sibling) {
+                leaf->merge_to_left(left_sibling.get());
+                
+                // 从父节点中移除分隔键和叶子节点引用
+                KeyType old_key = parent->get_key(leaf_index - 1);
+                parent->remove(old_key);
+                
+                // 检查父节点是否需要重新平衡
+                if (parent->is_underflow()) {
+                    rebalance_internal(parent);
+                }
             }
         } else if (leaf_index < parent->size()) {
             // 合并右兄弟到当前节点
             auto right_sibling = std::static_pointer_cast<LeafNodeType>(
                 parent->get_child(leaf_index + 1));
-            right_sibling->merge_to_left(leaf.get());
-            
-            // 从父节点中移除分隔键和右兄弟引用
-            parent->remove(parent->get_key(leaf_index));
-            
-            if (parent->is_underflow()) {
-                rebalance_internal(std::static_pointer_cast<InternalNodeType>(
-                    std::static_pointer_cast<NodeType>(
-                        std::shared_ptr<InternalNodeType>(parent, [](auto*){}))));
+            if (right_sibling) {
+                right_sibling->merge_to_left(leaf.get());
+                
+                // 从父节点中移除分隔键和右兄弟引用
+                KeyType old_key = parent->get_key(leaf_index);
+                parent->remove(old_key);
+                
+                if (parent->is_underflow()) {
+                    rebalance_internal(parent);
+                }
             }
         }
     }
@@ -891,21 +920,137 @@ private:
             return;
         }
         
-        auto parent = static_cast<InternalNodeType*>(internal->parent());
-        if (!parent) {
+        auto parent_raw = static_cast<InternalNodeType*>(internal->parent());
+        if (!parent_raw) {
+            return;
+        }
+        
+        // 获取父节点的shared_ptr以便访问私有成员
+        InternalNodePtr parent_ptr = find_internal_node_ptr(parent_raw);
+        if (!parent_ptr) {
             return;
         }
         
         // 找到内部节点在父节点中的位置
         size_t internal_index = 0;
-        for (; internal_index <= parent->size(); ++internal_index) {
-            if (parent->get_child(internal_index).get() == internal.get()) {
+        for (; internal_index <= parent_ptr->size(); ++internal_index) {
+            if (parent_ptr->get_child(internal_index).get() == internal.get()) {
                 break;
             }
         }
         
-        // 省略：实现内部节点的借用和合并逻辑
-        // 与叶子节点类似，但更复杂
+        // 尝试从左兄弟借用
+        if (internal_index > 0) {
+            auto left_sibling = std::static_pointer_cast<InternalNodeType>(
+                parent_ptr->get_child(internal_index - 1));
+            if (left_sibling && left_sibling->size() > static_cast<size_t>((config_.order + 1) / 2)) {
+                // 从左兄弟借用最后一个键和孩子
+                if (!left_sibling->keys_.empty() && !left_sibling->children_.empty()) {
+                    KeyType borrowed_key = left_sibling->keys_.back();
+                    NodePtr borrowed_child = left_sibling->children_.back();
+                    
+                    left_sibling->keys_.pop_back();
+                    left_sibling->children_.pop_back();
+                    
+                    // 将父节点的分隔键插入到当前节点
+                    KeyType parent_key = parent_ptr->get_key(internal_index - 1);
+                    internal->keys_.insert(internal->keys_.begin(), parent_key);
+                    internal->children_.insert(internal->children_.begin(), borrowed_child);
+                    borrowed_child->set_parent(internal.get());
+                    
+                    // 更新父节点的分隔键
+                    parent_ptr->keys_[internal_index - 1] = borrowed_key;
+                    return;
+                }
+            }
+        }
+        
+        // 尝试从右兄弟借用
+        if (internal_index < parent_ptr->size()) {
+            auto right_sibling = std::static_pointer_cast<InternalNodeType>(
+                parent_ptr->get_child(internal_index + 1));
+            if (right_sibling && right_sibling->size() > static_cast<size_t>((config_.order + 1) / 2)) {
+                // 从右兄弟借用第一个键和孩子
+                if (!right_sibling->keys_.empty() && !right_sibling->children_.empty()) {
+                    KeyType borrowed_key = right_sibling->keys_.front();
+                    NodePtr borrowed_child = right_sibling->children_.front();
+                    
+                    right_sibling->keys_.erase(right_sibling->keys_.begin());
+                    right_sibling->children_.erase(right_sibling->children_.begin());
+                    
+                    // 将父节点的分隔键插入到当前节点
+                    KeyType parent_key = parent_ptr->get_key(internal_index);
+                    internal->keys_.push_back(parent_key);
+                    internal->children_.push_back(borrowed_child);
+                    borrowed_child->set_parent(internal.get());
+                    
+                    // 更新父节点的分隔键
+                    parent_ptr->keys_[internal_index] = borrowed_key;
+                    return;
+                }
+            }
+        }
+        
+        // 需要合并
+        if (internal_index > 0) {
+            // 合并到左兄弟
+            auto left_sibling = std::static_pointer_cast<InternalNodeType>(
+                parent_ptr->get_child(internal_index - 1));
+            
+            if (left_sibling) {
+                // 将父节点的分隔键添加到左兄弟
+                KeyType parent_key = parent_ptr->get_key(internal_index - 1);
+                left_sibling->keys_.push_back(parent_key);
+                
+                // 将当前节点的所有键和孩子添加到左兄弟
+                left_sibling->keys_.insert(left_sibling->keys_.end(),
+                                          internal->keys_.begin(), internal->keys_.end());
+                left_sibling->children_.insert(left_sibling->children_.end(),
+                                               internal->children_.begin(), internal->children_.end());
+                
+                // 更新子节点的父指针
+                for (auto& child : internal->children_) {
+                    child->set_parent(left_sibling.get());
+                }
+                
+                // 从父节点中移除分隔键和当前节点引用
+                parent_ptr->remove(parent_key);
+                
+                // 检查父节点是否需要重新平衡
+                if (parent_ptr->is_underflow()) {
+                    rebalance_internal(parent_ptr);
+                }
+            }
+        } else if (internal_index < parent_ptr->size()) {
+            // 合并右兄弟到当前节点
+            auto right_sibling = std::static_pointer_cast<InternalNodeType>(
+                parent_ptr->get_child(internal_index + 1));
+            
+            if (right_sibling) {
+                // 将父节点的分隔键添加到当前节点
+                KeyType parent_key = parent_ptr->get_key(internal_index);
+                internal->keys_.push_back(parent_key);
+                
+                // 将右兄弟的所有键和孩子添加到当前节点
+                internal->keys_.insert(internal->keys_.end(),
+                                      right_sibling->keys_.begin(), right_sibling->keys_.end());
+                internal->children_.insert(internal->children_.end(),
+                                           right_sibling->children_.begin(), right_sibling->children_.end());
+                
+                // 更新子节点的父指针
+                for (auto& child : right_sibling->children_) {
+                    child->set_parent(internal.get());
+                }
+                
+                // 从父节点中移除分隔键和右兄弟引用
+                parent_ptr->remove(parent_key);
+                
+                // 检查父节点是否需要重新平衡
+                if (parent_ptr->is_underflow()) {
+                    rebalance_internal(parent_ptr);
+                }
+            }
+        }
     }
     
     // 调整根节点
@@ -948,14 +1093,25 @@ private:
             return leaf;
         } else {
             auto internal = std::make_shared<InternalNodeType>(config_.order, config_);
-            internal->deserialize(is);
+            // 先读取键的数量
+            size_t key_count;
+            is.read(reinterpret_cast<char*>(&key_count), sizeof(key_count));
             
-            // 反序列化子节点
-            size_t child_count = internal->size() + 1;
+            // 读取所有键
+            internal->keys_.resize(key_count);
+            for (size_t i = 0; i < key_count; ++i) {
+                is.read(reinterpret_cast<char*>(&internal->keys_[i]), sizeof(KeyType));
+            }
+            
+            // 反序列化子节点（子节点数量 = 键数量 + 1）
+            size_t child_count = key_count + 1;
+            internal->children_.reserve(child_count);
             for (size_t i = 0; i < child_count; ++i) {
                 NodePtr child = deserialize_node(is);
-                // 这里需要将child添加到internal中
-                // 简化处理，实际需要完整重建树结构
+                if (child) {
+                    internal->children_.push_back(child);
+                    child->set_parent(internal.get());
+                }
             }
             return internal;
         }
@@ -972,7 +1128,7 @@ private:
         NodePtr node = root_;
         while (!node->is_leaf()) {
             auto internal = std::static_pointer_cast<InternalNodeType>(node);
-            if (internal->size() > 0) {
+            if (internal->size() > 0 && internal->get_child(0)) {
                 node = internal->get_child(0);
             } else {
                 break;
@@ -981,13 +1137,74 @@ private:
         
         leaf_head_ = std::static_pointer_cast<LeafNodeType>(node);
         
-        // 遍历叶子节点建立链表
-        LeafNodePtr current = leaf_head_;
-        while (current) {
-            // 找到下一个叶子节点
-            // 这里简化处理，实际需要遍历整棵树
-            break;
+        // 通过中序遍历重建叶子节点链表
+        std::vector<LeafNodePtr> leaf_nodes;
+        collect_leaf_nodes(root_, leaf_nodes);
+        
+        // 建立链表连接
+        for (size_t i = 0; i < leaf_nodes.size(); ++i) {
+            if (i > 0) {
+                leaf_nodes[i]->set_prev(leaf_nodes[i-1].get());
+            }
+            if (i < leaf_nodes.size() - 1) {
+                leaf_nodes[i]->set_next(leaf_nodes[i+1].get());
+            }
         }
+        
+        if (!leaf_nodes.empty()) {
+            leaf_head_ = leaf_nodes[0];
+        }
+    }
+    
+    // 收集所有叶子节点（辅助函数）
+    void collect_leaf_nodes(NodePtr node, std::vector<LeafNodePtr>& leaves) {
+        if (!node) {
+            return;
+        }
+        
+        if (node->is_leaf()) {
+            leaves.push_back(std::static_pointer_cast<LeafNodeType>(node));
+        } else {
+            auto internal = std::static_pointer_cast<InternalNodeType>(node);
+            for (size_t i = 0; i <= internal->size(); ++i) {
+                NodePtr child = internal->get_child(i);
+                if (child) {
+                    collect_leaf_nodes(child, leaves);
+                }
+            }
+        }
+    }
+    
+    // 查找内部节点的shared_ptr（辅助函数）
+    InternalNodePtr find_internal_node_ptr(InternalNodeType* target) {
+        if (!root_ || root_.get() == target) {
+            return std::static_pointer_cast<InternalNodeType>(root_);
+        }
+        
+        std::queue<NodePtr> q;
+        q.push(root_);
+        
+        while (!q.empty()) {
+            NodePtr node = q.front();
+            q.pop();
+            
+            if (!node->is_leaf()) {
+                auto internal = std::static_pointer_cast<InternalNodeType>(node);
+                if (internal.get() == target) {
+                    return internal;
+                }
+                
+                // 继续搜索子节点
+                for (size_t i = 0; i <= internal->size(); ++i) {
+                    NodePtr child = internal->get_child(i);
+                    if (child) {
+                        q.push(child);
+                    }
+                }
+            }
+        }
+        
+        return nullptr;
     }
     
 private:

@@ -30,11 +30,18 @@ public:
      * TransactionConfig - 事务配置
      */
     struct TransactionConfig {
-        IsolationLevel default_isolation_level = IsolationLevel::REPEATABLE_READ;
-        uint64_t default_lock_timeout_ms = 5000;  // 5秒
-        bool enable_deadlock_detection = true;
-        uint64_t deadlock_detection_interval_ms = 1000;
+        IsolationLevel default_isolation_level; // 默认隔离级别
+        uint64_t default_lock_timeout_ms;  // 5秒
+        bool enable_deadlock_detection; // 是否启用死锁检测
+        uint64_t deadlock_detection_interval_ms; // 死锁检测间隔
         std::string wal_data_dir;  // WAL 数据目录
+        
+        TransactionConfig()
+            : default_isolation_level(IsolationLevel::REPEATABLE_READ)
+            , default_lock_timeout_ms(5000)
+            , enable_deadlock_detection(true)
+            , deadlock_detection_interval_ms(1000)
+        {}
     };
     
     TransactionManager(const TransactionConfig& config = TransactionConfig{});

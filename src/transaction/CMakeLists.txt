@@ -20,6 +20,8 @@ set(TRANSACTION_SOURCES
     src/FileWAL.cpp
     src/MVCCEngine.cpp
     src/Snapshot.cpp
+    src/DeadlockDetector.cpp
+    src/LockTableGraphBuilder.cpp
 )
 
 # 检查其他源文件是否存在，如果存在则添加
@@ -30,6 +32,7 @@ foreach(SOURCE_FILE
     src/LockTable.cpp
     src/RecoveryManager.cpp
     src/DeadlockDetector.cpp
+    src/LockTableGraphBuilder.cpp
 )
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE})
         list(APPEND TRANSACTION_SOURCES ${SOURCE_FILE})
@@ -48,6 +51,7 @@ set(TRANSACTION_HEADERS
     src/FileWAL.hpp
     src/RecoveryManager.hpp
     src/DeadlockDetector.hpp
+    src/LockTableGraphBuilder.hpp
     src/MVCCEngine.hpp
     src/Snapshot.hpp
 )

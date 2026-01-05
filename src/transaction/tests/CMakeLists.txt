@@ -27,10 +27,19 @@ target_link_libraries(wal_test
     core
 )
 
+add_executable(transaction_module_test TransactionModuleTest.cpp)
+target_link_libraries(transaction_module_test
+    transaction
+    utils
+    memory
+    core
+)
+
 # 如果使用 C++17 的 filesystem，需要链接 filesystem 库
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
     target_link_libraries(transaction_test stdc++fs)
     target_link_libraries(lock_manager_test stdc++fs)
     target_link_libraries(wal_test stdc++fs)
+    target_link_libraries(transaction_module_test stdc++fs)
 endif()
 

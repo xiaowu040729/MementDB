@@ -25,9 +25,15 @@ MVCCEngine::~MVCCEngine() {
     LOG_INFO("MVCCEngine", "MVCC引擎析构");
 }
 
-std::unique_ptr<Snapshot> MVCCEngine::create_snapshot(TransactionID tid) {
+Snapshot::Ptr MVCCEngine::create_snapshot(TransactionID tid) {
     uint64_t snapshot_timestamp = current_timestamp_.load();
-    return std::make_unique<Snapshot>(tid, snapshot_timestamp);
+    // 默认使用可重复读快照类型，并且当前实现不跟踪全局活跃事务集合
+    return Snapshot::create(
+        SnapshotType::REPEATABLE_READ,
+        snapshot_timestamp,
+        {},
+        tid
+    );
 }
 
 std::optional<std::vector<char>> MVCCEngine::read_version(
@@ -41,8 +47,8 @@ std::optional<std::vector<char>> MVCCEngine::read_version(
         return std::nullopt;
     }
     
-    // 查找可读的版本（时间戳 <= snapshot.timestamp 且已提交）
-    auto version = find_readable_version(key, snapshot.get_timestamp());
+    // 查找可读的版本（基于 Version::is_visible 进行判断）
+    auto version = find_readable_version(key, snapshot.timestamp());
     if (version.has_value()) {
         return version->value;
     }
@@ -65,6 +71,8 @@ bool MVCCEngine::write_version(
         new_version.value = value;
         new_version.transaction_id = tid;
         new_version.committed = false;
+        new_version.create_txid = tid;
+        new_version.begin_timestamp = write_timestamp;
         
         versions_[key].push_back(new_version);
         
@@ -142,13 +150,63 @@ bool MVCCEngine::abort_version(TransactionID tid) {
     return true;
 }
 
+MVCCEngine::EngineStats MVCCEngine::get_stats() const {
+    EngineStats stats;
+
+    {
+        std::shared_lock<std::shared_mutex> lock(versions_mutex_);
+        stats.total_keys = versions_.size();
+
+        uint64_t oldest_ts = std::numeric_limits<uint64_t>::max();
+        uint64_t newest_ts = 0;
+
+        for (const auto& [key, ver_list] : versions_) {
+            (void)key;
+            stats.total_versions += ver_list.size();
+
+            for (const auto& v : ver_list) {
+                // 近似统计内存：版本头 + value 大小
+                stats.approximate_memory_bytes += sizeof(Version) + v.value.size();
+                if (v.timestamp < oldest_ts) {
+                    oldest_ts = v.timestamp;
+                }
+                if (v.timestamp > newest_ts) {
+                    newest_ts = v.timestamp;
+                }
+            }
+        }
+
+        if (stats.total_versions > 0) {
+            stats.oldest_version_timestamp = oldest_ts;
+            stats.newest_version_timestamp = newest_ts;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(write_sets_mutex_);
+        stats.active_transactions = write_sets_.size();
+    }
+
+    return stats;
+}
+
+MVCCEngine::GCStats MVCCEngine::get_gc_stats() const {
+    std::lock_guard<std::mutex> lock(write_sets_mutex_);
+    // gc_stats_ 只在 cleanup_old_versions 中更新，这里直接返回拷贝
+    return gc_stats_;
+}
+
 void MVCCEngine::cleanup_old_versions(uint64_t current_timestamp) {
     uint64_t cutoff_timestamp = current_timestamp - config_.version_retention_time_ms;
     
     std::lock_guard<std::shared_mutex> lock(versions_mutex_);
     
+    size_t removed_total = 0;
+    size_t reclaimed_bytes = 0;
+
     for (auto it = versions_.begin(); it != versions_.end();) {
-        remove_old_versions(it->second, cutoff_timestamp);
+        size_t before = it->second.size();
+        remove_old_versions(it->second, cutoff_timestamp, removed_total, reclaimed_bytes);
         
         if (it->second.empty()) {
             it = versions_.erase(it);
@@ -156,6 +214,16 @@ void MVCCEngine::cleanup_old_versions(uint64_t current_timestamp) {
             ++it;
         }
     }
+
+    // 更新 GC 统计信息
+    gc_stats_.collected_versions = removed_total;
+    gc_stats_.memory_reclaimed = reclaimed_bytes;
+    gc_stats_.total_versions = 0;
+    for (const auto& [key, ver_list] : versions_) {
+        (void)key;
+        gc_stats_.total_versions += ver_list.size();
+    }
+    gc_stats_.last_collection_time = current_timestamp;
 }
 
 size_t MVCCEngine::get_version_count(const std::vector<char>& key) const {
@@ -178,10 +246,10 @@ std::optional<MVCCEngine::Version> MVCCEngine::find_readable_version(
         return std::nullopt;
     }
     
-    // 从最新版本开始查找
+    // 从最新版本开始查找，使用版本自身的可见性规则
     const auto& versions = it->second;
     for (auto rit = versions.rbegin(); rit != versions.rend(); ++rit) {
-        if (rit->committed && rit->timestamp <= snapshot_timestamp) {
+        if (rit->is_visible(snapshot_timestamp)) {
             return *rit;
         }
     }
@@ -191,15 +259,21 @@ std::optional<MVCCEngine::Version> MVCCEngine::find_readable_version(
 
 void MVCCEngine::remove_old_versions(
     std::vector<Version>& versions,
-    uint64_t cutoff_timestamp
+    uint64_t cutoff_timestamp,
+    size_t& removed_count,
+    size_t& reclaimed_bytes
 ) {
-    versions.erase(
-        std::remove_if(versions.begin(), versions.end(),
-            [cutoff_timestamp](const Version& v) {
-                return v.committed && v.timestamp < cutoff_timestamp;
-            }),
-        versions.end()
-    );
+    auto it = std::remove_if(
+        versions.begin(), versions.end(),
+        [cutoff_timestamp, &removed_count, &reclaimed_bytes](const Version& v) {
+            if (v.committed && v.timestamp < cutoff_timestamp) {
+                ++removed_count;
+                reclaimed_bytes += sizeof(Version) + v.value.size();
+                return true;
+            }
+            return false;
+        });
+    versions.erase(it, versions.end());
 }
 
 } // namespace transaction

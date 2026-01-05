@@ -81,7 +81,7 @@ public:
      * @param tid 事务 ID
      * @return 锁模式
      */
-    LockMode get_lock_mode(TransactionID tid) const;
+    LockMode get_olock_mode(TransactionID tid) const;
     
     /**
      * add_request - 添加锁请求到等待队列
@@ -139,6 +139,9 @@ private:
  * LockTable - 锁表
  * 
  * 管理所有键上的锁信息
+ * 
+ * 锁表：键 -> LockEntry
+ * LockEntry：排他锁持有者 -> 共享锁持有者集合 -> 等待队列
  */
 class LockTable {
 public:
@@ -218,6 +221,12 @@ public:
     void clear();
     
     /**
+     * get_all_keys - 获取所有键（用于遍历）
+     * @return 所有键的列表
+     */
+    std::vector<std::string> get_all_keys() const;
+    
+    /**
      * get_stats - 获取统计信息
      */
     struct Stats {
@@ -226,9 +235,12 @@ public:
         size_t total_held_locks;        // 持有的锁总数
     };
     
+
+    // 获取统计信息
     Stats get_stats() const;
     
 private:
+    
     // 锁表：键 -> LockEntry
     std::unordered_map<std::string, std::unique_ptr<LockEntry>> lock_table_;
     

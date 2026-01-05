@@ -1,8 +1,9 @@
 # 总体架构
 mementodb/                      # 项目根目录
 ├── CMakeLists.txt              # 项目主构建文件
+├── CMakePresets.json           # CMake 预设配置
 ├── conanfile.txt               # 依赖管理 (可选但强烈推荐)
-├── README.md                   # 项目总览、构建指南、架构图
+├── Readme.md                   # 项目总览、构建指南、架构图
 ├── LICENSE                     # 开源许可证 (如 MIT)
 ├── .gitignore                  # Git忽略文件
 │
@@ -15,21 +16,23 @@ mementodb/                      # 项目根目录
 ├── src/                        # 所有源代码
 │   ├── core/                    # 核心存储引擎
 │   │   ├── CMakeLists.txt
-│   │   ├── DiskEngine.h/.cpp           # 主存储引擎（基于B+Tree）
-│   │   ├── StorageEngine.h/.cpp        # ★ 存储引擎抽象基类
-│   │   ├── Page.h/.cpp                 # 页结构（4KB/8KB/16KB）
-│   │   ├── BPlusTree.h/.cpp            # B+树实现（核心索引结构）
-│   │   ├── FileManager.h/.cpp          # 文件管理器（页的磁盘IO）
-│   │   ├── Record.h/.cpp               # 记录/键值对存储格式
-│   │   ├── BufferPool.h/.cpp           # ★ 新增：缓冲池管理器
-│   │   ├── LRUReplacer.h/.cpp          # ★ 新增：LRU淘汰算法
-│   │   └── ClockReplacer.h/.cpp        # ★ 新增：Clock淘汰算法
+│   │   ├── DiskEngine.hpp/.cpp         # 主存储引擎（基于B+Tree）
+│   │   ├── BPlusTree.hpp/.cpp          # B+树实现（核心索引结构）
+│   │   ├── Page.hpp/.cpp               # 页结构（4KB/8KB/16KB）
+│   │   ├── FileManager.hpp/.cpp        # 文件管理器（页的磁盘IO）
+│   │   ├── Record.hpp/.cpp             # 记录/键值对存储格式
+│   │   ├── README.md
+│   │   ├── StorageEngine.h/.cpp        # ★ 计划：存储引擎抽象基类
+│   │   ├── BufferPool.h/.cpp           # ★ 计划：缓冲池管理器
+│   │   ├── LRUReplacer.h/.cpp          # ★ 计划：LRU淘汰算法
+│   │   └── ClockReplacer.h/.cpp        # ★ 计划：Clock淘汰算法
 │   │
 │   ├── memory/                  # 独立的内存管理模块
 │   │   ├── CMakeLists.txt
-│   │   ├── Arena.hpp/.cpp       # 内存分配器
-│   │   ├── MemoryPool.hpp/.cpp  # ★ 增强：通用的内存池
-│   │   └── WALBase.hpp          # WAL基础类模板
+│   │   ├── Arena.hpp/.cpp              # 内存分配器
+│   │   ├── WALBase.hpp                 # WAL基础类模板
+│   │   ├── Arena说明.md
+│   │   └── MemoryPool.hpp/.cpp         # ★ 计划：通用的内存池
 │   │
 │   │
 │   ├── net/                     # 网络服务层
@@ -43,31 +46,45 @@ mementodb/                      # 项目根目录
 │   │
 │   ├── utils/                   # 基础工具与公共类
 │   │   ├── CMakeLists.txt
-│   │   ├── Logger.h/.cpp        # ★ 改为正式类
-│   │   ├── ConfigManager.h/.cpp # ★ 新增：配置管理器
-│   │   ├── Hash.h/.cpp          # 哈希函数
-│   │   ├── Coding.h/.cpp        # 基础编码/解码函数
-│   │   ├── Random.h/.cpp        # 随机数
-│   │   ├── CRC32.h/.cpp         # ★ 新增：CRC校验
-│   │   └── Metrics.h/.cpp       # ★ 新增：性能监控指标
+│   │   ├── Hash.hpp/.cpp               # 哈希函数（支持多种算法）
+│   │   ├── CRC32.hpp/.cpp              # CRC32C校验（硬件加速）
+│   │   ├── Coding.hpp/.cpp             # 基础编码/解码函数
+│   │   ├── Random.hpp/.cpp              # 随机数生成
+│   │   ├── Compression.hpp/.cpp        # 压缩工具
+│   │   ├── LoggingSystem/              # 日志系统
+│   │   │   ├── Logger.hpp/.cpp         # 日志管理器
+│   │   │   ├── LogSink.hpp/.cpp        # 日志输出接口
+│   │   │   ├── ConsoleSink.hpp/.cpp    # 控制台输出
+│   │   │   ├── FileSink.hpp/.cpp       # 文件输出
+│   │   │   ├── LogMessage.hpp/.cpp     # 日志消息
+│   │   │   ├── LogMacros.hpp           # 日志宏定义
+│   │   │   ├── Readme.md
+│   │   │   └── 如何测试日志系统.md
+│   │   ├── 使用指南.md
+│   │   ├── utils详解.md
+│   │   ├── ConfigManager.h/.cpp        # ★ 计划：配置管理器
+│   │   └── Metrics.h/.cpp              # ★ 计划：性能监控指标
 │   │
 │   ├── transaction/             # 事务模块
 │   │   ├── CMakeLists.txt
 │   │   ├── include/                    # 公开接口
 │   │   │   ├── Transaction.hpp         # 事务接口定义
-│   │   │   ├── IsolationLevel.hpp       # 隔离级别定义
-│   │   │   └── WALInterface.hpp         # WAL抽象接口定义
-│   │   ├── src/
-│   │   │   ├── TransactionManager.hpp/.cpp
-│   │   │   ├── TransactionContext.hpp/.cpp
-│   │   │   ├── LockManager.hpp/.cpp
-│   │   │   ├── LockTable.hpp/.cpp
-│   │   │   ├── FileWAL.hpp/.cpp
-│   │   │   ├── RecoveryManager.hpp/.cpp
-│   │   │   ├── DeadlockDetector.hpp/.cpp
-│   │   │   ├── MVCCEngine.hpp/.cpp      # ★ 新增：MVCC实现
-│   │   │   └── Snapshot.hpp/.cpp        # ★ 新增：快照管理
-│   │   └── tests/
+│   │   │   ├── IsolationLevel.hpp      # 隔离级别定义
+│   │   │   └── WALInterface.hpp        # WAL抽象接口定义
+│   │   ├── src/                        # 实现文件
+│   │   │   ├── TransactionManager.hpp  # 事务管理器（仅头文件）
+│   │   │   ├── TransactionContext.hpp/.cpp  # 事务上下文
+│   │   │   ├── LockManager.hpp         # 锁管理器（仅头文件）
+│   │   │   ├── LockTable.hpp           # 锁表（仅头文件）
+│   │   │   ├── LockTableGraphBuilder.hpp/.cpp  # 死锁检测图构建器
+│   │   │   ├── DeadlockDetector.hpp/.cpp      # 死锁检测器
+│   │   │   ├── FileWAL.hpp/.cpp                # 文件WAL实现
+│   │   │   ├── RecoveryManager.hpp/.cpp       # 恢复管理器
+│   │   │   ├── MVCCEngine.hpp/.cpp             # MVCC引擎
+│   │   │   ├── Snapshot.hpp/.cpp               # 快照管理
+│   │   │   └── VectorCharHash.hpp              # 字节序列哈希工具
+│   │   └── tests/                     # 测试文件
+│   │       ├── CMakeLists.txt
 │   │       ├── TransactionTest.cpp
 │   │       ├── LockManagerTest.cpp
 │   │       └── WALTest.cpp
@@ -86,6 +103,10 @@ mementodb/                      # 项目根目录
 │   │   ├── ReplicationManager.h/.cpp    # 复制管理
 │   │   └── Membership.h/.cpp            # 集群成员管理
 │   └── main.cpp                # 程序入口点
+│
+├── build/                       # 构建输出目录（gitignore，Conan生成文件也在此）
+│
+├── logs/                        # 日志目录（gitignore）
 │
 ├── thirdparty/                  # ★ 建议使用第三方库（可选）
 │   ├── catch2/                  # 单元测试框架
@@ -126,3 +147,30 @@ mementodb/                      # 项目根目录
     ├── BUFFER_POOL_DESIGN.md       # ★ 新增：缓冲池设计文档
     ├── MVCC_DESIGN.md              # ★ 新增：MVCC设计文档
     └── BENCHMARK_RESULT.md
+
+## 快速构建指南
+
+### 前置要求
+- CMake 3.16+
+- Conan 2.x
+- C++20 编译器
+
+### 构建步骤
+
+1. **安装依赖（使用 Conan）**
+   ```bash
+   # 重要：使用 --output-folder 参数将生成的文件放到 build 目录
+   conan install . --output-folder=build --build=missing
+   ```
+
+2. **配置 CMake**
+   ```bash
+   cmake -S . -B build
+   ```
+
+3. **编译**
+   ```bash
+   cmake --build build -j4
+   ```
+
+**注意**：Conan 生成的文件（`*.cmake`、`conanbuild.sh` 等）会自动输出到 `build/` 目录，不会污染项目根目录。

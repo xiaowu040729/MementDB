@@ -14,10 +14,7 @@ namespace memory {
 /**
  * WALBase - WAL 基础类模板
  * 
- * 提供公共的 WAL 功能：
- * - 状态持久化/加载
- * - 目录管理
- * - 时间戳获取
+ * 先写日志，再写数据，日志和数据是同时写入的。
  * 
  * @tparam LogRecordType 日志记录类型（由子类定义）
  */

@@ -5,6 +5,7 @@
 #include "../include/Transaction.hpp"
 #include "LockTable.hpp"
 #include "DeadlockDetector.hpp"
+#include "LockTableGraphBuilder.hpp"
 #include <string>
 #include <memory>
 #include <mutex>
@@ -15,6 +16,7 @@ namespace transaction {
 
 // 前向声明
 class TransactionContext;
+class TransactionManager;
 
 /**
  * LockManager - 锁管理器
@@ -34,6 +36,7 @@ public:
     };
     
     LockManager();
+    explicit LockManager(TransactionManager* transaction_manager);
     ~LockManager();
     
     // 禁止拷贝
@@ -117,7 +120,13 @@ public:
      * @param deadlock_info 死锁信息
      * @return 被选择为牺牲者的事务 ID
      */
-    TransactionID handle_deadlock(const DeadlockDetector::DeadlockInfo& deadlock_info);
+    TransactionID handle_deadlock(const DeadlockInfo& deadlock_info);
+    
+    /**
+     * set_deadlock_config - 设置死锁检测配置
+     * @param config 配置
+     */
+    void set_deadlock_config(const DeadlockDetectionConfig& config);
     
     /**
      * get_lock_table - 获取锁表（用于调试）
@@ -125,7 +134,7 @@ public:
     LockTable* get_lock_table() { return lock_table_.get(); }
     
     /**
-     * get_deadlock_detector - 获取死锁检测器（用于调试）
+     * get_deadlock_detector - 获取死锁检测器（用于高级操作）
      */
     DeadlockDetector* get_deadlock_detector() { return deadlock_detector_.get(); }
     
@@ -144,7 +153,9 @@ public:
     
 private:
     std::unique_ptr<LockTable> lock_table_;
+    std::unique_ptr<LockTableGraphBuilder> graph_builder_;
     std::unique_ptr<DeadlockDetector> deadlock_detector_;
+    TransactionManager* transaction_manager_;  // 用于获取事务信息（不拥有所有权）
     
     // 统计信息
     std::atomic<size_t> total_locks_acquired_{0};
@@ -156,11 +167,9 @@ private:
     mutable std::mutex mutex_;
     
     /**
-     * select_victim - 选择牺牲者事务（用于死锁解决）
-     * @param cycle 死锁环中的事务列表
-     * @return 被选择的事务 ID
+     * initialize_deadlock_detector - 初始化死锁检测器
      */
-    TransactionID select_victim(const std::vector<TransactionID>& cycle);
+    void initialize_deadlock_detector();
 };
 
 } // namespace transaction

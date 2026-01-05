@@ -67,6 +67,12 @@ struct PhysicalLogRecord {
 
 /**
  * CheckpointRecord - 检查点记录
+ * 
+ * LSN: 日志序列号，用于标识日志记录的唯一性
+ * 检查点记录：
+ * 1. 检查点LSN：检查点所在的LSN
+ * 2. 活跃事务数量
+ * 3. 活跃事务列表
  */
 struct CheckpointRecord {
     uint64_t checkpoint_lsn;         // 检查点LSN
