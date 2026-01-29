@@ -358,6 +358,43 @@ private:
     mutable std::atomic<size_t> miss_count_{0};
 };
 
+// ==================== FileManager 包装类 ====================
+
+/**
+ * @brief FileManager 包装类
+ * @details 提供简单的接口用于缓冲池等组件
+ */
+class FileManager {
+public:
+    explicit FileManager(const FileManagerConfig& config = FileManagerConfig{})
+        : config_(config)
+        , cache_manager_(1024 * 1024 * 1024, 1024) { // 1GB cache, 1024 max files
+    }
+    
+    ~FileManager() = default;
+    
+    // 禁止拷贝
+    FileManager(const FileManager&) = delete;
+    FileManager& operator=(const FileManager&) = delete;
+    
+    // 允许移动
+    FileManager(FileManager&&) = default;
+    FileManager& operator=(FileManager&&) = default;
+    
+    // 获取文件句柄
+    std::shared_ptr<FileHandle> get_file(const std::string& path,
+                                         FileHandle::OpenMode mode = FileHandle::OpenMode::ReadWrite) {
+        return cache_manager_.get_file(path, mode, config_);
+    }
+    
+    // 获取配置
+    const FileManagerConfig& get_config() const { return config_; }
+    
+private:
+    FileManagerConfig config_;
+    FileCacheManager cache_manager_;
+};
+
 } // namespace core
 } // namespace mementodb
 

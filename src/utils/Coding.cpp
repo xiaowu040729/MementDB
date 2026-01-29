@@ -70,8 +70,11 @@ void Coding::EncodeVarint32(std::string* dst, uint32_t value) {
 }
 
 bool Coding::GetVarint32(Slice* input, uint32_t* value) {
+    // 获取输入数据的指针和长度
     const char* p = input->data();
+    // 获取输入数据的结束位置
     const char* limit = p + input->size();
+    // 使用备用函数解码，解码后的结果存储在value中
     const char* q = GetVarint32PtrFallback(p, limit, value);
     
     if (q == nullptr) {
@@ -85,6 +88,7 @@ bool Coding::GetVarint32(Slice* input, uint32_t* value) {
 const char* Coding::GetVarint32PtrFallback(const char* p, const char* limit, uint32_t* value) {
     uint32_t result = 0;
     
+    // 循环解码，每次解码7位，最高位表示是否继续
     for (uint32_t shift = 0; shift <= 28 && p < limit; shift += 7) {
         uint32_t byte = static_cast<unsigned char>(*p);
         p++;

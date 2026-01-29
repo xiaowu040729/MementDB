@@ -18,14 +18,15 @@ void test_basic_transaction() {
     TransactionManager manager(config);
     
     // 开始事务
-    auto txn = manager.begin_transaction(IsolationLevel::REPEATABLE_READ);
+    auto tid = manager.begin_transaction(IsolationLevel::REPEATABLE_READ);
+    auto txn = manager.get_transaction(tid);
     assert(txn != nullptr);
     assert(txn->is_active());
     
     // 提交事务
-    bool result = txn->commit();
+    bool result = manager.commit_transaction(tid);
     assert(result);
-    assert(txn->is_committed());
+    assert(manager.is_committed(tid));
     assert(!txn->is_active());
     
     std::cout << "✓ 基本事务操作测试通过" << std::endl;
@@ -37,14 +38,15 @@ void test_transaction_rollback() {
     TransactionManager::TransactionConfig config;
     TransactionManager manager(config);
     
-    auto txn = manager.begin_transaction(IsolationLevel::REPEATABLE_READ);
+    auto tid = manager.begin_transaction(IsolationLevel::REPEATABLE_READ);
+    auto txn = manager.get_transaction(tid);
     assert(txn != nullptr);
     assert(txn->is_active());
     
     // 回滚事务
-    bool result = txn->rollback();
+    bool result = manager.rollback_transaction(tid);
     assert(result);
-    assert(txn->is_aborted());
+    assert(manager.is_aborted(tid));
     assert(!txn->is_active());
     
     std::cout << "✓ 事务回滚测试通过" << std::endl;
@@ -61,10 +63,11 @@ void test_concurrent_transactions() {
     
     for (int i = 0; i < 10; ++i) {
         threads.emplace_back([&manager, &success_count]() {
-            auto txn = manager.begin_transaction(IsolationLevel::REPEATABLE_READ);
+            auto tid = manager.begin_transaction(IsolationLevel::REPEATABLE_READ);
+            auto txn = manager.get_transaction(tid);
             if (txn) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                if (txn->commit()) {
+                if (manager.commit_transaction(tid)) {
                     success_count.fetch_add(1);
                 }
             }

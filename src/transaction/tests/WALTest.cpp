@@ -18,7 +18,11 @@ void test_wal_basic_operations() {
     std::filesystem::create_directories(log_dir);
     
     // 创建 FileWAL
-    FileWAL wal(log_dir, 8192, true);
+    WALConfig cfg;
+    cfg.log_dir = log_dir;
+    cfg.buffer_size = 8192;
+    cfg.enable_segment_compression = true;
+    FileWAL wal(cfg);
     
     TransactionID tid1 = 1;
     TransactionID tid2 = 2;
@@ -66,7 +70,11 @@ void test_wal_checkpoint() {
     std::string log_dir = "/tmp/mementodb_wal_test_checkpoint";
     std::filesystem::create_directories(log_dir);
     
-    FileWAL wal(log_dir, 8192, true);
+    WALConfig cfg;
+    cfg.log_dir = log_dir;
+    cfg.buffer_size = 8192;
+    cfg.enable_segment_compression = true;
+    FileWAL wal(cfg);
     
     TransactionID tid1 = 1;
     TransactionID tid2 = 2;
@@ -92,7 +100,11 @@ void test_wal_scanner() {
     std::string log_dir = "/tmp/mementodb_wal_test_scanner";
     std::filesystem::create_directories(log_dir);
     
-    FileWAL wal(log_dir, 8192, true);
+    WALConfig cfg;
+    cfg.log_dir = log_dir;
+    cfg.buffer_size = 8192;
+    cfg.enable_segment_compression = true;
+    FileWAL wal(cfg);
     
     TransactionID tid1 = 1;
     wal.log_begin(tid1);

@@ -885,14 +885,14 @@ private:
             auto left_sibling = std::static_pointer_cast<LeafNodeType>(
                 parent->get_child(leaf_index - 1));
             if (left_sibling) {
-                leaf->merge_to_left(left_sibling.get());
-                
-                // 从父节点中移除分隔键和叶子节点引用
+            leaf->merge_to_left(left_sibling.get());
+            
+            // 从父节点中移除分隔键和叶子节点引用
                 KeyType old_key = parent->get_key(leaf_index - 1);
                 parent->remove(old_key);
-                
-                // 检查父节点是否需要重新平衡
-                if (parent->is_underflow()) {
+            
+            // 检查父节点是否需要重新平衡
+            if (parent->is_underflow()) {
                     rebalance_internal(parent);
                 }
             }
@@ -901,13 +901,13 @@ private:
             auto right_sibling = std::static_pointer_cast<LeafNodeType>(
                 parent->get_child(leaf_index + 1));
             if (right_sibling) {
-                right_sibling->merge_to_left(leaf.get());
-                
-                // 从父节点中移除分隔键和右兄弟引用
+            right_sibling->merge_to_left(leaf.get());
+            
+            // 从父节点中移除分隔键和右兄弟引用
                 KeyType old_key = parent->get_key(leaf_index);
                 parent->remove(old_key);
-                
-                if (parent->is_underflow()) {
+            
+            if (parent->is_underflow()) {
                     rebalance_internal(parent);
                 }
             }
@@ -1199,7 +1199,7 @@ private:
                     NodePtr child = internal->get_child(i);
                     if (child) {
                         q.push(child);
-                    }
+        }
                 }
             }
         }

@@ -6,6 +6,7 @@ set(NET_SOURCES
     EpollLoop.cpp
     ThreadPool.cpp
     Protocol.cpp
+    ServerConfig.cpp
     Connection.cpp
     Server.cpp
 )
@@ -32,3 +33,5 @@ set_target_properties(net PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
+# 添加测试子目录
+add_subdirectory(tests)

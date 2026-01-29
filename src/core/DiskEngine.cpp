@@ -250,8 +250,40 @@ DiskEngineV2::DiskEngineV2(const std::string& data_dir, const EngineConfig& conf
     // 初始化组件
     extent_manager_ = std::make_unique<ExtentManager>(
         data_dir + "/data", config.extent_size, config.page_size, file_config_);
-    buffer_pool_ = std::make_unique<SmartBufferPool>(
-        config.buffer_pool_size, config.page_size, config.flush_strategy);
+    
+    // 创建增强版缓冲池
+    EnhancedBufferPoolConfig buffer_pool_config = EnhancedBufferPoolConfig::default_config();
+    buffer_pool_config.pool_size = config.buffer_pool_size;
+    buffer_pool_config.page_size = config.page_size;
+    // 根据 flush_strategy 设置刷盘策略
+    switch (config.flush_strategy) {
+        case EngineConfig::FlushStrategy::Lazy:
+            buffer_pool_config.flush_strategy = EnhancedBufferPoolConfig::FlushStrategy::LAZY;
+            break;
+        case EngineConfig::FlushStrategy::Periodic:
+            buffer_pool_config.flush_strategy = EnhancedBufferPoolConfig::FlushStrategy::PERIODIC;
+            break;
+        case EngineConfig::FlushStrategy::WriteThrough:
+            buffer_pool_config.flush_strategy = EnhancedBufferPoolConfig::FlushStrategy::WRITE_THROUGH;
+            break;
+        case EngineConfig::FlushStrategy::WriteBack:
+            buffer_pool_config.flush_strategy = EnhancedBufferPoolConfig::FlushStrategy::WRITE_BACK;
+            break;
+    }
+    // 设置刷盘间隔和脏页阈值
+    buffer_pool_config.flush_interval = std::chrono::milliseconds(config.flush_interval_ms);
+    buffer_pool_config.dirty_page_threshold = config.dirty_page_threshold;
+    
+    // 创建 FileManager 用于缓冲池（缓冲池需要 FileManager 来处理磁盘IO）
+    // 注意：这里使用与 ExtentManager 相同的配置
+    auto file_manager = std::make_unique<FileManager>(file_config_);
+    buffer_pool_ = EnhancedBufferPool::create(file_manager.get(), buffer_pool_config);
+    if (!buffer_pool_) {
+        LOG_ERROR("DATABASE", "Failed to create EnhancedBufferPool");
+        throw std::runtime_error("Failed to create EnhancedBufferPool");
+    }
+    // 保存 FileManager 以避免被销毁
+    file_manager_ = std::move(file_manager);
     
     if (config.enable_wal) {
         // 初始化分布式WAL
@@ -285,15 +317,16 @@ std::future<DiskPage> DiskEngineV2::read_page_async(uint64_t page_id) {
         // 缓冲池命中：直接复制页数据，无需磁盘IO
         // 注意：必须使用正确的 page_id 构造 DiskPage，然后复制数据
         DiskPage page_copy(page_id);
-        if (page_copy.GetData() && frame->page.GetData()) {
-            std::memcpy(page_copy.GetData(), frame->page.GetData(), kPageSize);
+        DiskPage& frame_page = frame->page();
+        if (page_copy.GetData() && frame_page.GetData()) {
+            std::memcpy(page_copy.GetData(), frame_page.GetData(), kPageSize);
         }
         // 还需要复制 header_，因为 GetData() 只返回数据区
         // 使用序列化/反序列化来确保完整复制
         char buffer[kPageSize];
-        frame->page.SerializeTo(buffer);
+        frame_page.SerializeTo(buffer);
         page_copy.DeserializeFrom(buffer);
-        buffer_pool_->release_page(page_id, false);
+        buffer_pool_->unpin_page(page_id, false);
         
         promise->set_value(std::move(page_copy));
         return future;
@@ -302,6 +335,7 @@ std::future<DiskPage> DiskEngineV2::read_page_async(uint64_t page_id) {
     // 步骤2：不在缓冲池中，需要从磁盘读取（慢速路径）
     auto extent = extent_manager_->find_extent(page_id);
     if (!extent) {
+        LOG_ERROR("DATABASE", "Page not found");
         promise->set_exception(
             std::make_exception_ptr(std::runtime_error("Page not found"))
         );
@@ -311,13 +345,14 @@ std::future<DiskPage> DiskEngineV2::read_page_async(uint64_t page_id) {
     // 步骤3：获取文件句柄
     auto file_handle = extent_manager_->get_file_handle(extent->file_id);
     if (!file_handle || !file_handle->is_open()) {
+        LOG_ERROR("DATABASE", "Failed to open file");
         promise->set_exception(
             std::make_exception_ptr(std::runtime_error("Failed to open file"))
         );
         return future;
     }
     
-    // 步骤4：计算文件中的偏移量
+    // 步骤4：计算文件中的偏移量 
     uint64_t offset = (page_id - extent->start_page) * kPageSize;
     
     // 步骤5：分配临时缓冲区（用于接收磁盘数据）
@@ -528,9 +563,10 @@ std::future<bool> DiskEngineV2::write_page_async(const DiskPage& page) {
     auto* frame = buffer_pool_->fetch_page(page_id, true);  // 获取写锁
     if (frame) {
         // 使用序列化/反序列化来更新缓冲池中的页
-        frame->page.DeserializeFrom(page_buffer);
-        frame->dirty.store(false);  // 已写入磁盘，不再脏
-        buffer_pool_->release_page(page_id, true);
+        DiskPage& frame_page = frame->page();
+        frame_page.DeserializeFrom(page_buffer);
+        frame->clear_dirty();  // 已写入磁盘，不再脏
+        buffer_pool_->unpin_page(page_id, true);
     }
     
     // 步骤7：提交异步写请求
@@ -644,410 +680,9 @@ void DiskEngineV2::ensure_directory(const std::string& path) {
     std::filesystem::create_directories(path);
 }
 
-// ==================== SmartBufferPool::BufferFrame 实现 ====================
-
-void SmartBufferPool::BufferFrame::pin() {
-    ++pin_count;
-}
-
-void SmartBufferPool::BufferFrame::unpin() {
-    if (pin_count > 0) {
-        --pin_count;
-    }
-}
-
-void SmartBufferPool::BufferFrame::mark_accessed() {
-    access_time.store(SmartBufferPool::get_current_time());
-    ++access_count;
-}
-
-// ==================== SmartBufferPool 实现 ====================
-
-SmartBufferPool::SmartBufferPool(size_t pool_size, size_t page_size, 
-                                 EngineConfig::FlushStrategy strategy)
-    : pool_size_(pool_size),
-      page_size_(page_size),
-      flush_strategy_(strategy),
-      running_(false) {
-    
-    frames_.clear();
-    frames_.reserve(pool_size);  // 在添加元素前预留空间，避免移动
-    for (size_t i = 0; i < pool_size; ++i) {
-        frames_.push_back(std::make_unique<BufferFrame>(page_size));
-        free_list_.push_back(i);
-    }
-    
-    // 启动后台线程
-    start_background_threads();
-}
-
-SmartBufferPool::~SmartBufferPool() {
-    stop_background_threads();
-    flush_all();
-}
-
-SmartBufferPool::BufferFrame* SmartBufferPool::fetch_page(uint64_t page_id, bool exclusive) {
-    // 1. 检查是否在缓冲池中
-    {
-        std::shared_lock<std::shared_mutex> lock(page_table_mutex_);
-        auto it = page_table_.find(page_id);
-        if (it != page_table_.end()) {
-            BufferFrame* frame = frames_[it->second].get();
-            
-            if (exclusive) {
-                // 尝试获取独占访问
-                bool expected = false;
-                if (frame->locked.compare_exchange_strong(expected, true)) {
-                    frame->pin();
-                    frame->mark_accessed();
-                    ++hit_count_;
-                    return frame;
-                }
-                return nullptr; // 被其他线程锁定
-            } else {
-                frame->pin();
-                frame->mark_accessed();
-                ++hit_count_;
-                return frame;
-            }
-        }
-    }
-    
-    // 2. 不在缓冲池中，需要加载
-    return load_page(page_id, exclusive);
-}
-
-SmartBufferPool::BufferFrame* SmartBufferPool::new_page() {
-    std::unique_lock<std::shared_mutex> lock(page_table_mutex_);
-    
-    // 分配页ID
-    static std::atomic<uint64_t> next_page_id{1};
-    uint64_t page_id = next_page_id.fetch_add(1);
-    
-    // 获取缓冲池帧
-    size_t frame_id = get_free_frame();
-    if (frame_id == pool_size_) {
-        return nullptr; // 没有可用帧
-    }
-    
-    // 初始化页（使用page_id构造）
-    BufferFrame* frame = frames_[frame_id].get();
-    frame->page = DiskPage(disk_page_adapter::to_page_id(page_id));
-    frame->dirty.store(true);
-    frame->pin();
-    frame->mark_accessed();
-    
-    // 更新页表
-    page_table_[page_id] = frame_id;
-    
-    return frame;
-}
-
-void SmartBufferPool::release_page(uint64_t page_id, bool mark_dirty) {
-    std::shared_lock<std::shared_mutex> lock(page_table_mutex_);
-    
-    auto it = page_table_.find(page_id);
-    if (it != page_table_.end()) {
-        BufferFrame* frame = frames_[it->second].get();
-        
-        frame->unpin();
-        if (mark_dirty) {
-            frame->dirty.store(true);
-        }
-        
-        // 如果是独占访问，释放锁
-        frame->locked.store(false);
-    }
-}
-
-void SmartBufferPool::prefetch_pages(const std::vector<uint64_t>& page_ids) {
-    // 在后台线程中异步预取
-    std::lock_guard<std::mutex> lock(prefetch_queue_mutex_);
-    for (uint64_t page_id : page_ids) {
-        prefetch_queue_.push(page_id);
-    }
-}
-
-SmartBufferPool::PoolStats SmartBufferPool::get_stats() const {
-    PoolStats stats{};
-    stats.total_frames = pool_size_;
-    
-    size_t hits = hit_count_.load();
-    size_t misses = miss_count_.load();
-    stats.hit_ratio = (hits + misses) > 0 ? 
-        static_cast<double>(hits) / (hits + misses) : 0.0;
-    
-    for (const auto& frame : frames_) {
-        if (frame && frame->pin_count.load() > 0) {
-            ++stats.pinned_frames;
-        }
-        if (frame && frame->dirty.load()) {
-            ++stats.dirty_frames;
-        }
-    }
-    
-    stats.used_frames = pool_size_ - free_list_.size();
-    stats.free_frames = free_list_.size();
-    stats.prefetch_count = prefetch_count_.load();
-    
-    return stats;
-}
-
-size_t SmartBufferPool::get_free_frame() {
-    if (!free_list_.empty()) {
-        size_t frame_id = free_list_.back();
-        free_list_.pop_back();
-        return frame_id;
-    }
-    
-    // 需要置换
-    return select_victim();
-}
-
-size_t SmartBufferPool::select_victim() {
-    // 尝试多种策略
-    size_t frame_id = select_by_clock();
-    if (frame_id != pool_size_) {
-        evict_frame(frame_id);
-        return frame_id;
-    }
-    
-    frame_id = select_by_lru();
-    if (frame_id != pool_size_) {
-        evict_frame(frame_id);
-        return frame_id;
-    }
-    
-    // 所有页都被固定
-    return pool_size_;
-}
-
-size_t SmartBufferPool::select_by_clock() {
-    static size_t clock_hand = 0;
-    
-    for (size_t i = 0; i < pool_size_ * 2; ++i) {
-        size_t frame_id = clock_hand;
-        clock_hand = (clock_hand + 1) % pool_size_;
-        
-        BufferFrame* frame = frames_[frame_id].get();
-        
-        if (frame && frame->pin_count.load() > 0) {
-            continue; // 跳过固定页
-        }
-        
-        // 检查访问位（简化实现）
-        if (frame && frame->access_count.load() == 0) {
-            return frame_id;
-        }
-        
-        // 清除访问位
-        if (frame) {
-            frame->access_count.store(0);
-        }
-    }
-    
-    return pool_size_;
-}
-
-size_t SmartBufferPool::select_by_lru() {
-    uint64_t oldest_time = UINT64_MAX;
-    size_t oldest_frame = pool_size_;
-    
-    for (size_t i = 0; i < pool_size_; ++i) {
-        BufferFrame* frame = frames_[i].get();
-        
-        if (!frame || frame->pin_count.load() > 0) {
-            continue;
-        }
-        
-        uint64_t access_time = frame->access_time.load();
-        if (access_time < oldest_time) {
-            oldest_time = access_time;
-            oldest_frame = i;
-        }
-    }
-    
-    return oldest_frame;
-}
-
-void SmartBufferPool::evict_frame(size_t frame_id) {
-    BufferFrame* frame = frames_[frame_id].get();
-    
-    if (!frame) return;
-    
-    // 如果是脏页，刷盘
-    if (frame->dirty.load()) {
-        flush_frame(frame_id);
-    }
-    
-    // 从页表中移除
-    std::unique_lock<std::shared_mutex> lock(page_table_mutex_);
-    for (auto it = page_table_.begin(); it != page_table_.end(); ++it) {
-        if (it->second == frame_id) {
-            page_table_.erase(it);
-            break;
-        }
-    }
-    
-    // 重置帧状态
-    frame->dirty.store(false);
-    frame->access_count.store(0);
-    frame->pin_count.store(0);
-    frame->locked.store(false);
-    
-    // 添加到空闲列表
-    free_list_.push_back(frame_id);
-}
-
-SmartBufferPool::BufferFrame* SmartBufferPool::load_page(uint64_t page_id, bool exclusive) {
-    ++miss_count_;
-    
-    size_t frame_id = get_free_frame();
-    if (frame_id == pool_size_) {
-        return nullptr;
-    }
-    
-    BufferFrame* frame = frames_[frame_id].get();
-    
-    // 从磁盘加载页数据（通过反序列化）
-    // TODO: 实际实现需要从磁盘读取数据后调用DeserializeFrom
-    
-    // 初始化页（使用page_id构造）
-    frame->page = DiskPage(disk_page_adapter::to_page_id(page_id));
-    frame->pin();
-    frame->mark_accessed();
-    
-    if (exclusive) {
-        frame->locked.store(true);
-    }
-    
-    // 更新页表
-    {
-        std::unique_lock<std::shared_mutex> lock(page_table_mutex_);
-        page_table_[page_id] = frame_id;
-    }
-    
-    return frame;
-}
-
-void SmartBufferPool::flush_frame(size_t frame_id) {
-    BufferFrame* frame = frames_[frame_id].get();
-    
-    if (!frame) return;
-    
-    // TODO: 异步刷盘
-    // 需要使用frame->page.SerializeTo()序列化后写入磁盘
-    
-    frame->dirty.store(false);
-}
-
-void SmartBufferPool::flush_all() {
-    for (size_t i = 0; i < pool_size_; ++i) {
-        if (frames_[i] && frames_[i]->dirty.load() && frames_[i]->pin_count.load() == 0) {
-            flush_frame(i);
-        }
-    }
-}
-
-void SmartBufferPool::start_background_threads() {
-    running_.store(true);
-    
-    // 刷盘线程
-    background_threads_.emplace_back([this]() { flush_thread(); });
-    
-    // 预取线程
-    background_threads_.emplace_back([this]() { prefetch_thread(); });
-    
-    // 统计线程
-    background_threads_.emplace_back([this]() { stats_thread(); });
-}
-
-void SmartBufferPool::stop_background_threads() {
-    running_.store(false);
-    for (auto& thread : background_threads_) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-    background_threads_.clear();
-}
-
-void SmartBufferPool::flush_thread() {
-    while (running_.load()) {
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(flush_interval_));
-        
-        if (flush_strategy_ == EngineConfig::FlushStrategy::Periodic) {
-            flush_dirty_pages();
-        }
-    }
-}
-
-void SmartBufferPool::prefetch_thread() {
-    std::vector<uint64_t> page_ids;
-    page_ids.reserve(64);
-    
-    while (running_.load()) {
-        page_ids.clear();
-        
-        // 从队列中取出待预取的页
-        {
-            std::lock_guard<std::mutex> lock(prefetch_queue_mutex_);
-            while (!prefetch_queue_.empty() && page_ids.size() < 64) {
-                page_ids.push_back(prefetch_queue_.front());
-                prefetch_queue_.pop();
-            }
-        }
-        
-        if (!page_ids.empty()) {
-            prefetch_count_ += page_ids.size();
-            
-            // 批量预取
-            for (uint64_t page_id : page_ids) {
-                // 异步加载页，但不pin
-                fetch_page(page_id, false);
-                release_page(page_id, false);
-            }
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-}
-
-void SmartBufferPool::stats_thread() {
-    while (running_.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(60));
-        
-        auto stats = get_stats();
-        log_stats(stats);
-    }
-}
-
-void SmartBufferPool::flush_dirty_pages() {
-    for (size_t i = 0; i < pool_size_; ++i) {
-        BufferFrame* frame = frames_[i].get();
-        
-        if (frame && frame->dirty.load() && frame->pin_count.load() == 0) {
-            // 检查页是否最近被访问
-            uint64_t now = get_current_time();
-            uint64_t last_access = frame->access_time.load();
-            
-            if (now - last_access > min_dirty_age_) {
-                flush_frame(i);
-            }
-        }
-    }
-}
-
-uint64_t SmartBufferPool::get_current_time() {
-    auto now = std::chrono::steady_clock::now();
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-        now.time_since_epoch()).count();
-}
-
-void SmartBufferPool::log_stats(const PoolStats& stats) {
-    // TODO: 输出到日志或监控系统
-}
+// ==================== SmartBufferPool 实现已移除 ====================
+// 注意：SmartBufferPool 已被 EnhancedBufferPool 替代
+// 所有实现已移至 BufferPool_Enhanced.cpp
 
 // ==================== DistributedWAL 实现 ====================
 
@@ -1393,7 +1028,8 @@ std::future<bool> DiskEngineV2::restore(const std::string& backup_dir) {
 DiskEngineV2::EngineStatus DiskEngineV2::get_status() const {
     EngineStatus status{};
     
-    status.buffer_pool_stats = buffer_pool_->get_stats();
+    // 获取增强版缓冲池统计信息
+    status.buffer_pool_stats = buffer_pool_->get_statistics();
     status.extent_stats = extent_manager_->get_stats();
     
     // 从FileHandle获取IO统计（需要从所有打开的文件句柄汇总）

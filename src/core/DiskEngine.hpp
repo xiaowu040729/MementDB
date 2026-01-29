@@ -25,6 +25,7 @@
 
 #include "Page.hpp"  // 使用已有的Page实现
 #include "FileManager.hpp"  // 使用FileManager处理文件IO
+#include "BufferPool.h"  // 使用增强版缓冲池
 #include "../utils/LoggingSystem/LogMacros.hpp"  // 日志系统
 #include "BPlusTree.hpp"  // B+树索引
 #include "Record.hpp"  // 键值对编码
@@ -40,9 +41,10 @@ struct EngineConfig {
     size_t extent_size = 64 * 1024 * 1024; // 区大小（64MB）
     size_t max_file_size = 4ULL * 1024 * 1024 * 1024 * 1024; // 最大4TB
     
-    // 缓冲池配置
-    size_t buffer_pool_size = 1024 * 1024;  // 1M页（4GB）
-    size_t hot_pool_size = 1024 * 16;       // 热数据池（64MB）
+    // 缓冲池配置（使用 EnhancedBufferPoolConfig）
+    // 注意：实际配置通过 EnhancedBufferPoolConfig 设置
+    // 这里保留用于兼容性，但建议直接使用 EnhancedBufferPoolConfig
+    size_t buffer_pool_size = 1024;            // 缓冲池大小（页数）
     
     // 性能配置
     bool use_direct_io = true;             // 直接IO
@@ -69,10 +71,10 @@ struct EngineConfig {
     // 压缩配置-
     bool enable_compression = false;
     enum class CompressionType {
-        None,
-        LZ4,
-        ZSTD,
-        Snappy
+        None, // 不压缩
+        LZ4, // LZ4压缩
+        ZSTD, // ZSTD压缩
+        Snappy // Snappy压缩
     } compression_type = CompressionType::LZ4;
     
     // 加密配置
@@ -92,7 +94,7 @@ class AlignedAllocator {
 public:
     using value_type = T;
     using size_type = size_t;
-    using difference_type = ptrdiff_t;
+    using difference_type = ptrdiff_t; // 
     
     template<typename U>
     struct rebind {
@@ -257,196 +259,48 @@ public:
     ExtentStats get_stats() const;
     
 private:
-    std::string base_path_;
-    size_t extent_size_;
-    size_t page_size_;
-    FileManagerConfig file_config_;
+    std::string base_path_; // 基础路径
+    size_t extent_size_; // 区大小
+    size_t page_size_; // 页大小
+    FileManagerConfig file_config_; // 文件管理配置
     
     std::vector<std::unique_ptr<Extent>> extents_;
-    uint64_t total_pages_{0};
-    uint32_t next_extent_id_;
-    mutable std::mutex extents_mutex_;
+    uint64_t total_pages_{0}; // 总页数
+    uint32_t next_extent_id_; // 下一个区ID
+    mutable std::mutex extents_mutex_; // 区互斥锁
     
     // 使用FileHandle缓存
-    std::unordered_map<uint32_t, std::shared_ptr<FileHandle>> file_cache_;
-    mutable std::mutex file_cache_mutex_;
+    std::unordered_map<uint32_t, std::shared_ptr<FileHandle>> file_cache_; // 文件缓存
+    mutable std::mutex file_cache_mutex_; // 文件缓存互斥锁
     
     static void ensure_directory(const std::string& path);
-    std::string get_extent_path(uint32_t file_id) const;
+    std::string get_extent_path(uint32_t file_id) const; // 获取区路径
     void load_extent_table();
     void save_extent_table();
 };
 
-// ==================== 智能缓冲池 ====================
-
-class SmartBufferPool {
-public:
-    /**
-     * BufferFrame - 缓冲池帧结构
-     */
-    struct BufferFrame {
-        DiskPage page;                              // 页数据（4KB，固定大小）
-        std::atomic<uint64_t> access_time{0};       // 最后访问时间（纳秒时间戳）
-        std::atomic<uint32_t> access_count{0};      // 访问次数（用于CLOCK算法）
-        std::atomic<uint32_t> pin_count{0};         // 引用计数（Pin计数）
-        std::atomic<bool> dirty{false};             // 脏页标记（是否已修改）
-        std::atomic<bool> locked{false};            // 独占锁标记（并发控制）
-        
-        // 禁止移动和拷贝（因为包含 atomic 和禁止拷贝的 Page）
-        BufferFrame(const BufferFrame&) = delete;
-        BufferFrame& operator=(const BufferFrame&) = delete;
-        BufferFrame(BufferFrame&&) = delete;
-        BufferFrame& operator=(BufferFrame&&) = delete;
-        
-        /**
-         * 构造函数
-         * @param page_size 页大小（当前版本固定4KB，此参数保留用于兼容）
-         * 
-         * 说明：
-         * - Page 是固定 4KB 大小，page_size 参数实际不使用
-         * - 使用 (void)page_size 避免编译器警告
-         */
-        BufferFrame(size_t page_size) : page() {
-            // 已有Page是固定4KB，不需要page_size参数
-            (void)page_size;  // 避免未使用参数警告
-        }
-        
-        /**
-         * pin - 固定页（增加引用计数）
-         */
-        void pin();
-        
-        /**
-         * unpin - 释放固定（减少引用计数）
-         */
-        void unpin();
-        
-        /**
-         * mark_accessed - 标记页被访问
-         */
-        void mark_accessed();
-    };
-    
-    SmartBufferPool(size_t pool_size, size_t page_size, 
-                   EngineConfig::FlushStrategy strategy);
-    ~SmartBufferPool();
-    
-    // 获取页
-    BufferFrame* fetch_page(uint64_t page_id, bool exclusive = false);
-
-    
-    // 创建新页
-    BufferFrame* new_page();
-    
-    // 释放页
-    void release_page(uint64_t page_id, bool mark_dirty = false);
-    
-    // 预取页
-    void prefetch_pages(const std::vector<uint64_t>& page_ids);
-    
-    // 获取统计信息
-    struct PoolStats {
-        size_t total_frames;
-        size_t used_frames;
-        size_t free_frames;
-        size_t dirty_frames;
-        size_t pinned_frames;
-        double hit_ratio;
-        size_t prefetch_count;
-    };
-    
-    PoolStats get_stats() const;
-    
-private:
-    size_t pool_size_;
-    size_t page_size_;
-    EngineConfig::FlushStrategy flush_strategy_;
-    
-    std::vector<std::unique_ptr<BufferFrame>> frames_;
-    std::vector<size_t> free_list_;
-    
-    // 页表：page_id -> frame_id
-    std::unordered_map<uint64_t, size_t> page_table_;
-    mutable std::shared_mutex page_table_mutex_;
-    
-    // 置换算法相关
-    std::vector<size_t> lru_list_;
-    std::vector<size_t> clock_hand_;
-    
-    // 预取队列（使用标准库）
-    std::queue<uint64_t> prefetch_queue_;
-    mutable std::mutex prefetch_queue_mutex_;
-    
-    // 后台线程
-    std::atomic<bool> running_{false};
-    std::vector<std::thread> background_threads_;
-    
-    // 统计信息
-    std::atomic<size_t> hit_count_{0};
-    std::atomic<size_t> miss_count_{0};
-    std::atomic<size_t> prefetch_count_{0};
-    
-    // 获取空闲帧
-    size_t get_free_frame();
-    
-    // 选择牺牲页（自适应策略）
-    size_t select_victim();
-    
-    // CLOCK算法
-    size_t select_by_clock();
-    
-    // LRU算法
-    size_t select_by_lru();
-    
-    // 驱逐帧
-    void evict_frame(size_t frame_id);
-    
-    // 加载页
-    BufferFrame* load_page(uint64_t page_id, bool exclusive);
-    
-    // 刷帧到磁盘
-    void flush_frame(size_t frame_id);
-    
-public:
-    // 刷所有脏页（供外部调用）
-    void flush_all();
-    
-private:
-    
-    // 后台线程
-    void start_background_threads();
-    void stop_background_threads();
-    void flush_thread();
-    void prefetch_thread();
-    void stats_thread();
-    void flush_dirty_pages();
-    
-    static uint64_t get_current_time();
-    void log_stats(const PoolStats& stats);
-    
-    // 配置参数
-    size_t flush_interval_ = 1000; // 1秒
-    uint64_t min_dirty_age_ = 5 * 1000 * 1000 * 1000ULL; // 5秒
-};
+// ==================== 缓冲池（使用 EnhancedBufferPool） ====================
+// 注意：SmartBufferPool 已被 EnhancedBufferPool 替代
+// 使用 EnhancedBufferPool 提供更强大的功能和更好的性能
 
 // ==================== 分布式WAL ====================
 
 // 定义 LogRecord 结构（在类外部，以便作为模板参数）
 struct DistributedWALLogRecord {
-    uint64_t lsn;
-    uint64_t timestamp;
-    uint32_t node_id;
+    uint64_t lsn; // 日志序列号
+    uint64_t timestamp; // 时间戳       
+    uint32_t node_id; // 节点ID
     uint32_t term; // Raft任期
-    std::vector<char> data;
-    std::function<void(bool)> callback;
+    std::vector<char> data; // 数据
+    std::function<void(bool)> callback; // 回调函数
     
     DistributedWALLogRecord(uint64_t l, uint32_t nid, uint32_t t, std::vector<char> d)
         : lsn(l), node_id(nid), term(t), data(std::move(d)) {
         // 使用标准库获取时间戳
         timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-    }
-};
+    } 
+}; // 分布式WAL日志记录结构
 
 class DistributedWAL : public memory::WALBase<DistributedWALLogRecord> {
 public:
@@ -653,7 +507,7 @@ public:
      * @return EngineStatus 引擎状态
      */
     struct EngineStatus {
-        SmartBufferPool::PoolStats buffer_pool_stats; // 缓冲池统计信息
+        EnhancedBufferPool::EnhancedStatistics buffer_pool_stats; // 缓冲池统计信息（使用增强版统计）
         ExtentManager::ExtentStats extent_stats; // 扩展统计信息
         FileHandle::IOStats io_stats;  // 使用FileHandle的IOStats
         DistributedWAL::ClusterStatus cluster_status; // 集群状态
@@ -695,7 +549,8 @@ private:
     FileManagerConfig file_config_;
     
     std::unique_ptr<ExtentManager> extent_manager_;
-    std::unique_ptr<SmartBufferPool> buffer_pool_;
+    std::unique_ptr<FileManager> file_manager_;  // FileManager 用于缓冲池
+    std::unique_ptr<EnhancedBufferPool> buffer_pool_;  // 使用增强版缓冲池
     std::unique_ptr<DistributedWAL> wal_;
     
     // B+树索引（键值对存储）

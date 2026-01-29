@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 #include <chrono>
+#include <string>
 
 using namespace mementodb::transaction;
 
@@ -17,14 +18,14 @@ void test_basic_lock() {
     LockManager lock_manager;
     
     TransactionID tid1 = 1;
-    std::vector<char> key1 = {'k', 'e', 'y', '1'};
+    std::string key1 = "key1";
     
     // 获取读锁
-    bool result = lock_manager.acquire_read_lock(tid1, key1);
-    assert(result);
+    auto result = lock_manager.acquire_read_lock(key1, tid1);
+    assert(result == LockManager::LockResult::SUCCESS);
     
     // 释放读锁
-    lock_manager.release_read_lock(tid1, key1);
+    lock_manager.release_lock(key1, tid1);
     
     std::cout << "✓ 基本锁操作测试通过" << std::endl;
 }
@@ -36,24 +37,24 @@ void test_write_lock_exclusive() {
     
     TransactionID tid1 = 1;
     TransactionID tid2 = 2;
-    std::vector<char> key1 = {'k', 'e', 'y', '1'};
+    std::string key1 = "key1";
     
     // tid1 获取写锁
-    bool result1 = lock_manager.acquire_write_lock(tid1, key1);
-    assert(result1);
+    auto result1 = lock_manager.acquire_write_lock(key1, tid1);
+    assert(result1 == LockManager::LockResult::SUCCESS);
     
     // tid2 尝试获取写锁（应该失败或等待）
-    bool result2 = lock_manager.acquire_write_lock(tid2, key1, 100); // 100ms 超时
-    assert(!result2); // 应该超时失败
+    auto result2 = lock_manager.acquire_write_lock(key1, tid2, 100); // 100ms 超时
+    assert(result2 != LockManager::LockResult::SUCCESS); // 应该超时失败
     
     // tid1 释放写锁
-    lock_manager.release_write_lock(tid1, key1);
+    lock_manager.release_lock(key1, tid1);
     
     // 现在 tid2 应该能获取写锁
-    result2 = lock_manager.acquire_write_lock(tid2, key1);
-    assert(result2);
+    result2 = lock_manager.acquire_write_lock(key1, tid2);
+    assert(result2 == LockManager::LockResult::SUCCESS);
     
-    lock_manager.release_write_lock(tid2, key1);
+    lock_manager.release_lock(key1, tid2);
     
     std::cout << "✓ 写锁独占性测试通过" << std::endl;
 }
@@ -65,24 +66,24 @@ void test_read_write_conflict() {
     
     TransactionID tid1 = 1;
     TransactionID tid2 = 2;
-    std::vector<char> key1 = {'k', 'e', 'y', '1'};
+    std::string key1 = "key1";
     
     // tid1 获取读锁
-    bool result1 = lock_manager.acquire_read_lock(tid1, key1);
-    assert(result1);
+    auto result1 = lock_manager.acquire_read_lock(key1, tid1);
+    assert(result1 == LockManager::LockResult::SUCCESS);
     
     // tid2 尝试获取写锁（应该失败或等待）
-    bool result2 = lock_manager.acquire_write_lock(tid2, key1, 100);
-    assert(!result2); // 应该超时失败
+    auto result2 = lock_manager.acquire_write_lock(key1, tid2, 100);
+    assert(result2 != LockManager::LockResult::SUCCESS); // 应该超时失败
     
     // tid1 释放读锁
-    lock_manager.release_read_lock(tid1, key1);
+    lock_manager.release_lock(key1, tid1);
     
     // 现在 tid2 应该能获取写锁
-    result2 = lock_manager.acquire_write_lock(tid2, key1);
-    assert(result2);
+    result2 = lock_manager.acquire_write_lock(key1, tid2);
+    assert(result2 == LockManager::LockResult::SUCCESS);
     
-    lock_manager.release_write_lock(tid2, key1);
+    lock_manager.release_lock(key1, tid2);
     
     std::cout << "✓ 读写冲突测试通过" << std::endl;
 }

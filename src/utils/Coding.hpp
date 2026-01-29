@@ -62,7 +62,17 @@ public:
     // ==================== 变长编码（节省空间，用于存储长度等小整数）====================
     
     /**
-    * 将32位整数编码为Varint32
+    * @brief 将32位整数编码为Varint32
+    * @param [in] dst 输出字符串
+    * @param [in] value 输入整数
+    * @return 无
+    * 例子：
+    * ```cpp
+    * std::string buffer;
+    * uint32_t value = 12345;
+    * Coding::EncodeVarint32(&buffer, value);
+    * ```
+    * buffer 现在只有1字节（而不是4字节）！
      */
     static void EncodeVarint32(std::string* dst, uint32_t value);
     
@@ -89,10 +99,9 @@ public:
     
     /**
      * 从输入Slice中解码出长度前缀的Slice，并移动输入指针。
-     * 使用场景：
-     *   1. 从数据页读取键值对
-     *   2. 从WAL日志恢复记录
-     *   3. 解析网络请求
+     * @param [in/out] input 输入数据，解码后指针会移动到Slice之后。
+     * @param [out] result 解码出的Slice。
+     * @return 成功返回true，数据不完整或损坏返回false。
      */
     static bool GetLengthPrefixedSlice(Slice* input, Slice* result);
     
