@@ -27,6 +27,21 @@ find_package(Crc32c QUIET)
 find_package(xxHash QUIET)
 find_package(zstd QUIET)
 
+# 若 Conan 未提供 zstd，尝试系统包（如 libzstd-dev）
+if(NOT zstd_FOUND)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(ZSTD QUIET libzstd)
+        if(ZSTD_FOUND)
+            set(zstd_FOUND TRUE)
+        endif()
+    endif()
+endif()
+# 若根目录已通过 FetchContent 提供 zstd，直接使用
+if(NOT zstd_FOUND AND TARGET libzstd_static)
+    set(zstd_FOUND TRUE)
+endif()
+
 target_link_libraries(utils PUBLIC
     Threads::Threads
 )
@@ -43,8 +58,17 @@ if(xxHash_FOUND)
 endif()
 
 if(zstd_FOUND)
-    target_link_libraries(utils PUBLIC zstd::libzstd_static)
     target_compile_definitions(utils PUBLIC HAVE_ZSTD)
+    if(TARGET zstd::libzstd_static)
+        target_link_libraries(utils PUBLIC zstd::libzstd_static)
+    elseif(TARGET libzstd_static)
+        # FetchContent 提供的 zstd：链接静态库并添加头文件路径
+        target_link_libraries(utils PUBLIC libzstd_static)
+        target_include_directories(utils PUBLIC ${zstd_SOURCE_DIR}/lib)
+    else()
+        target_link_libraries(utils PUBLIC ${ZSTD_LIBRARIES})
+        target_include_directories(utils PUBLIC ${ZSTD_INCLUDE_DIRS})
+    endif()
 endif()
 
 

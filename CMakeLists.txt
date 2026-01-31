@@ -36,6 +36,35 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 需要线程支持（std::thread），在 Linux 下要显式链接 pthread
 find_package(Threads REQUIRED)
 
+# 可选依赖 zstd：优先 Conan/系统，否则自动下载并编译（供 core 与 utils 使用）
+find_package(zstd QUIET)
+if(NOT zstd_FOUND)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(ZSTD QUIET libzstd)
+        if(ZSTD_FOUND)
+            set(zstd_FOUND TRUE)
+        endif()
+    endif()
+endif()
+if(NOT zstd_FOUND)
+    include(FetchContent)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG v1.5.5
+        SOURCE_SUBDIR build/cmake
+    )
+    FetchContent_MakeAvailable(zstd)
+    if(TARGET libzstd_static)
+        set(zstd_FOUND TRUE)
+        message(STATUS "zstd: 使用 FetchContent 自动下载并编译 (v1.5.5)")
+    endif()
+endif()
+
 # 让可执行文件输出到 build/Debug 目录
 # 必须在 add_executable() 之前设置
 if(NOT CMAKE_CONFIGURATION_TYPES)

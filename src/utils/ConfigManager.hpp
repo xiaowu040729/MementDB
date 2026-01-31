@@ -11,6 +11,7 @@
 #include <variant>
 #include <atomic>
 #include <shared_mutex>
+#include <mutex>
 #include <filesystem>
 #include <fstream>
 #include <sstream>

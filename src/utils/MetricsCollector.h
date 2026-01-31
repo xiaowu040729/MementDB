@@ -9,6 +9,7 @@
 #include <vector>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <shared_mutex>
 #include <chrono>
 #include <optional>
